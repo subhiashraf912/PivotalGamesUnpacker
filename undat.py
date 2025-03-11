@@ -8,7 +8,7 @@ import sys
 
 
 
-dat_file = "mission01.dat"
+dat_file = "catalog.dat"
 
 
 
@@ -189,8 +189,12 @@ def main():
             # Known name?
             if dwHash in name_map:
                 mapped_name = name_map[dwHash]
-                safe_name = re.sub(r'[<>:"/\\|?*]', "", mapped_name)
+                # safe_name = re.sub(r'[<>:"/\\|?*]', "", mapped_name)
+                safe_name = mapped_name
+                print(f"safe name: {mapped_name}")
                 save_path = os.path.join(parent_dir, safe_name)
+                print(f"save_path: {save_path}")
+                print(save_path)
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 print(f"{Fore.YELLOW}Extracting known: {mapped_name}{Fore.RESET}")
             else:

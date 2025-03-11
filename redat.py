@@ -10,7 +10,7 @@ import sys
 
 
 
-directory = "mission01"
+directory = "mission02"
 
 
 
