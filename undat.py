@@ -1,7 +1,6 @@
 import os
 import struct
 import re
-import json
 import importlib
 import subprocess
 import sys
@@ -9,7 +8,6 @@ import sys
 def ensure_installed(package_name: str, install_name: str | None = None) -> None:
     if not install_name:
         install_name = package_name
-
     try:
         importlib.import_module(package_name)
     except ImportError:
@@ -32,7 +30,14 @@ from colorama import Fore, init
 init()
 
 ###############################################################################
-#  Hash function: duplicates the C# "DatHash.iGetHash"
+#  DEC <-> HEX CONVERSION (if desired)
+###############################################################################
+def hash_dec_to_hex(dwHash: int) -> str:
+    """Convert an integer hash to uppercase 8-hex-digit string, e.g. 0x1A2B3C4D => '1A2B3C4D'."""
+    return f"{dwHash:08X}"
+
+###############################################################################
+#  Hash function (integer-based)
 ###############################################################################
 def ce_hash(input_string: str) -> int:
     dwHash = 1
@@ -57,46 +62,34 @@ def ce_hash(input_string: str) -> int:
     return dwHash & 0xFFFFFFFF
 
 ###############################################################################
-#  Load FileNames.list => { 123456789: "Some/Name.ext", ... } (integer keys)
+#  Load FileNames.list => { integer_hash : "Some/Name.ext" }
 ###############################################################################
 def load_filenames_list(list_path: str):
-    """
-    Mirroring the C# DatHashList logic:
-       - For each line in FileNames.list, compute lower-hash and upper-hash,
-         store both => that same filename
-    """
-    hash_dict = {}
-    count = 0
-
     if not os.path.isfile(list_path):
         print(f"[ERROR]: Project file not found: {list_path}")
-        return hash_dict
+        return {}
 
+    hash_dict = {}
+    count = 0
     with open(list_path, 'r', encoding='utf-8', errors='ignore') as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-
             lower_hash = ce_hash(line.lower())
             upper_hash = ce_hash(line.upper())
-
-            if lower_hash in hash_dict:
-                print(f"[COLLISION]: line {count} => {hash_dict[lower_hash]} <-> {line}")
-            hash_dict[lower_hash] = line
-
-            if upper_hash in hash_dict:
-                print(f"[COLLISION]: line {count} => {hash_dict[upper_hash]} <-> {line}")
-            hash_dict[upper_hash] = line
-
+            if lower_hash not in hash_dict:
+                hash_dict[lower_hash] = line
+            if upper_hash not in hash_dict:
+                hash_dict[upper_hash] = line
             count += 1
 
-    print(f"[INFO]: Project File Loaded: {count} filenames")
+    print(f"{Fore.GREEN}[INFO] Loaded {count} filenames from: {list_path}{Fore.RESET}")
     return hash_dict
-
 
 ###############################################################################
 def guess_extension(data: bytes) -> str:
+    """Use the old approach for extension guessing."""
     if len(data) < 4:
         return "bin"
     first4 = data[:4]
@@ -119,31 +112,50 @@ def guess_extension(data: bytes) -> str:
     elif first4[:2] == b"BM":
         return "bmp"
     else:
+        # might be ASCII -> guess txt
         try:
             data[:256].decode("ascii")
             return "txt"
         except UnicodeDecodeError:
             return "bin"
 
-###############################################################################
-#  Main "undat" logic
+def extract_eobj_internal_name(data: bytes) -> str:
+    """
+    If file starts with "EOBJ", read from offset=8 onward until
+    we hit a null or non-ASCII. Then convert list of bytes to 'bytes' object
+    so we can decode it properly.
+    """
+    offset = 8
+    if len(data) <= offset:
+        return ""
+    out_bytes = []
+    i = offset
+    while i < len(data):
+        b = data[i]
+        if b == 0:
+            break  # null terminator
+        if b < 32 or b > 126:
+            break
+        out_bytes.append(b)
+        i += 1
+
+    # Convert list of ints to a bytes object:
+    return bytes(out_bytes).decode('ascii', errors='ignore').strip()
+
 ###############################################################################
 def main():
-
-    dat_file = "mission01.dat"
+    # Example usage
+    dat_file = "mission10.dat"
     project_file = "data/FileNames.list"
 
-    # Load dictionary (hash -> filename) with integer keys
+    # Load known dictionary from FileNames.list
     name_map = {}
-    if project_file and os.path.isfile(project_file):
+    if os.path.isfile(project_file):
         name_map = load_filenames_list(project_file)
-
-    # with open('f.json', 'w', encoding='utf-8') as file:
-    #     file.write(json.dumps(name_map, indent=4))
-    #     file.close()
-
-    print(f"{Fore.GREEN}Processing DAT: {dat_file}{Fore.RESET}")
-
+    else:
+        print("[WARNING] No existing FileNames.list found, starting empty.")
+    
+    print(f"{Fore.CYAN}Processing DAT: {dat_file}{Fore.RESET}")
     parent_dir = os.path.splitext(dat_file)[0]
     os.makedirs(parent_dir, exist_ok=True)
 
@@ -152,51 +164,59 @@ def main():
         loop = 0
         while True:
             f.seek(loop)
-            hash_data = f.read(4)
-            if len(hash_data) < 4:
-                # out of data
+            chunk = f.read(12)
+            if len(chunk) < 12:
                 break
-
-            dwHash = struct.unpack("<I", hash_data)[0]
+            dwHash, dwOffset, dwSize = struct.unpack("<III", chunk)
             if dwHash == 0:
-                # "if (dwHash == 0) break;"
                 break
 
-            # skip duplicates
             if dwHash in processed_files:
                 loop += 12
                 continue
             processed_files[dwHash] = True
 
-            offset = struct.unpack("<I", f.read(4))[0]
-            size   = struct.unpack("<I", f.read(4))[0]
+            f.seek(dwOffset)
+            data = f.read(dwSize)
 
-            f.seek(offset)
-            data = f.read(size)
-
-            # Check if dwHash is in name_map (integer keys)
+            # Known name?
             if dwHash in name_map:
-                # known filename from FileNames.list
                 mapped_name = name_map[dwHash]
-                # remove weird characters
-                filename = re.sub(r'[<>:"/\\|?*]', "", mapped_name)
-                filename = f"{filename.split('.')[0]}.{dwHash}.{filename.split('.')[1]}"
-                # save_path = os.path.join(parent_dir, filename)
-                save_path = f"{parent_dir}\\{mapped_name}"
+                safe_name = re.sub(r'[<>:"/\\|?*]', "", mapped_name)
+                save_path = os.path.join(parent_dir, safe_name)
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 print(f"{Fore.YELLOW}Extracting known: {mapped_name}{Fore.RESET}")
             else:
-                # unknown => guess extension
+                # Unknown => guess extension
                 ext_guess = guess_extension(data)
-                # sub_dir = os.path.join(parent_dir, ext_guess)
-                # os.makedirs(sub_dir, exist_ok=True)
-                # fallback name => e.g. "A955C55F.dds" style
-                # convert dwHash to hex
-                # hash_str = f"{dwHash:08X}"
-                filename = f"{dwHash}.{ext_guess}"
-                # save_path = os.path.join(sub_dir, filename)
-                save_path = f"{parent_dir}\\{filename}"
-                print(f"{Fore.YELLOW}Extracting unknown: {filename}{Fore.RESET}")
+                if ext_guess == "eobj":
+                    # try read internal name
+                    possible_name = extract_eobj_internal_name(data)
+                    if possible_name:
+                        # store in dictionary so next time it won't be unknown
+                        name_map[dwHash] = possible_name
+                        # also append it to the FileNames.list
+                        with open(project_file, "a", encoding="utf-8") as list_fp:
+                            list_fp.write(f"{possible_name}.EVO" + "\n")
+                            list_fp.write(f"{possible_name}.DDS" + "\n")
+
+                        safe_name = re.sub(r'[<>:"/\\|?*]', "", possible_name)
+                        save_path = os.path.join(parent_dir, f"{safe_name}.EVO")
+                        print(f"{Fore.YELLOW}Extracting EOBJ with internal name: {possible_name}{Fore.RESET}")
+                        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                    else:
+                        # fallback
+                        # hex_str = hash_dec_to_hex(dwHash)
+                        safe_name = f"{dwHash}.eobj"
+                        save_path = os.path.join(parent_dir, safe_name)
+                        print(f"{Fore.YELLOW}Extracting unknown EOBJ => {safe_name}{Fore.RESET}")
+                else:
+                    # fallback for everything else
+                    # hex_str = hash_dec_to_hex(dwHash)
+                    safe_name = f"{dwHash}.{ext_guess}"
+                    save_path = os.path.join(parent_dir, safe_name)
+                    print(f"{Fore.YELLOW}Extracting unknown: {safe_name}{Fore.RESET}")
+
             with open(save_path, "wb") as out_f:
                 out_f.write(data)
 
