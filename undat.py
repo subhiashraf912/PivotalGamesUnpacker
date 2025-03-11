@@ -5,6 +5,21 @@ import importlib
 import subprocess
 import sys
 
+
+
+
+dat_file = "mission01.dat"
+
+
+
+
+
+
+
+
+
+
+
 def ensure_installed(package_name: str, install_name: str | None = None) -> None:
     if not install_name:
         install_name = package_name
@@ -89,7 +104,7 @@ def load_filenames_list(list_path: str):
 
 ###############################################################################
 def guess_extension(data: bytes) -> str:
-    """Use the old approach for extension guessing."""
+
     if len(data) < 4:
         return "bin"
     first4 = data[:4]
@@ -120,11 +135,7 @@ def guess_extension(data: bytes) -> str:
             return "bin"
 
 def extract_eobj_internal_name(data: bytes) -> str:
-    """
-    If file starts with "EOBJ", read from offset=8 onward until
-    we hit a null or non-ASCII. Then convert list of bytes to 'bytes' object
-    so we can decode it properly.
-    """
+
     offset = 8
     if len(data) <= offset:
         return ""
@@ -139,16 +150,12 @@ def extract_eobj_internal_name(data: bytes) -> str:
         out_bytes.append(b)
         i += 1
 
-    # Convert list of ints to a bytes object:
     return bytes(out_bytes).decode('ascii', errors='ignore').strip()
 
 ###############################################################################
 def main():
-    # Example usage
-    dat_file = "mission10.dat"
     project_file = "data/FileNames.list"
 
-    # Load known dictionary from FileNames.list
     name_map = {}
     if os.path.isfile(project_file):
         name_map = load_filenames_list(project_file)
@@ -193,9 +200,9 @@ def main():
                     # try read internal name
                     possible_name = extract_eobj_internal_name(data)
                     if possible_name:
-                        # store in dictionary so next time it won't be unknown
+                        
                         name_map[dwHash] = possible_name
-                        # also append it to the FileNames.list
+                        
                         with open(project_file, "a", encoding="utf-8") as list_fp:
                             list_fp.write(f"{possible_name}.EVO" + "\n")
                             list_fp.write(f"{possible_name}.DDS" + "\n")
